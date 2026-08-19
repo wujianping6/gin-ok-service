@@ -1,0 +1,9 @@
+services:
+  app:
+    build: .
+    image: gin-ok-service:local
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
