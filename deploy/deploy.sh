@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <image-name> <image-tag> <bind-address> <host-port>" >&2
+if [[ $# -lt 4 || $# -gt 5 ]]; then
+  echo "usage: $0 <image-name> <image-tag> <bind-address> <host-port> [image-already-loaded]" >&2
   exit 2
 fi
 
@@ -10,6 +10,7 @@ image_name=$1
 image_tag=$2
 bind_address=$3
 host_port=$4
+image_already_loaded=${5:-false}
 deploy_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 if [[ ! $image_name =~ ^ghcr\.io/[a-z0-9._/-]+$ ]]; then
@@ -29,6 +30,11 @@ fi
 
 if [[ ! $host_port =~ ^[0-9]{1,5}$ ]] || (( 10#$host_port < 1 || 10#$host_port > 65535 )); then
   echo "invalid host port: $host_port" >&2
+  exit 2
+fi
+
+if [[ $image_already_loaded != "true" && $image_already_loaded != "false" ]]; then
+  echo "image-already-loaded must be true or false" >&2
   exit 2
 fi
 
@@ -59,10 +65,19 @@ compose() {
   docker compose --env-file "$env_file" -f compose.production.yaml "$@"
 }
 
-echo "Pulling $image_name:$image_tag"
-if ! compose "$next_env" pull app; then
-  rm -f "$next_env"
-  exit 1
+if [[ $image_already_loaded == "true" ]]; then
+  echo "Using the image transferred by the CI runner"
+  if ! docker image inspect "$image_name:$image_tag" >/dev/null; then
+    echo "transferred image is not available: $image_name:$image_tag" >&2
+    rm -f "$next_env"
+    exit 1
+  fi
+else
+  echo "Pulling $image_name:$image_tag"
+  if ! compose "$next_env" pull app; then
+    rm -f "$next_env"
+    exit 1
+  fi
 fi
 
 echo "Starting the new container and waiting for its health check"

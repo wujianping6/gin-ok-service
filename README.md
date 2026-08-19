@@ -31,8 +31,9 @@ docker compose down
 1. 运行单元测试、静态检查并验证 Docker 构建。
 2. `main` 分支更新后，构建 `linux/amd64` 和 `linux/arm64` 镜像并推送到 GHCR。
 3. 配置启用后，通过 SSH 把生产 Compose 文件上传到物理服务器。
-4. 服务器拉取以 Git commit SHA 标记的镜像，启动容器并等待健康检查。
-5. 健康检查失败时，自动尝试恢复上一次部署的镜像。
+4. GitHub Runner 拉取以 Git commit SHA 标记的 `linux/amd64` 镜像，并通过 SSH 压缩传输到服务器执行 `docker load`。
+5. 服务器启动容器并等待健康检查。
+6. 健康检查失败时，自动尝试恢复上一次部署的镜像。
 
 部署功能默认关闭。请在仓库 `Settings > Secrets and variables > Actions` 中设置：
 

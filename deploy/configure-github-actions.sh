@@ -38,6 +38,10 @@ done
   echo "invalid GITHUB_REPOSITORY: $GITHUB_REPOSITORY" >&2
   exit 1
 }
+[[ $SERVER_HOST =~ ^[A-Za-z0-9.:-]+$ ]] || {
+  echo "invalid SERVER_HOST: use a plain IP address or hostname without a URL, user, port or path" >&2
+  exit 1
+}
 [[ $SERVER_USER =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || {
   echo "invalid SERVER_USER: $SERVER_USER" >&2
   exit 1
