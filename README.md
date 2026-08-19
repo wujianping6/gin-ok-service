@@ -64,3 +64,15 @@ sudo usermod -aG docker <SSH用户>
 ```
 
 修改用户组后需要重新登录。服务器还需要允许 GitHub 托管 Runner 通过 SSH 访问，并能访问 `ghcr.io` 拉取镜像。
+
+也可以使用仓库提供的本地配置文件和上传脚本：
+
+```bash
+# 编辑本地配置文件；该文件已被 .gitignore 忽略
+vim deploy/github-actions-config.env
+
+# 校验配置并上传 Secrets/Variables
+./deploy/configure-github-actions.sh
+```
+
+可提交的字段说明模板位于 `deploy/github-actions-config.env.example`。实际配置和 SSH 私钥都不应提交到 Git。

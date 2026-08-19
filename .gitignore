@@ -3,3 +3,4 @@
 .vscode/
 server
 coverage.out
+deploy/github-actions-config.env
