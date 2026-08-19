@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestRootReturnsOK(t *testing.T) {
+func TestRootReturnsHelloWorld(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	recorder := httptest.NewRecorder()
@@ -19,7 +19,7 @@ func TestRootReturnsOK(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
 	}
 
-	if recorder.Body.String() != "ok" {
-		t.Fatalf("expected body %q, got %q", "ok", recorder.Body.String())
+	if recorder.Body.String() != "hello world" {
+		t.Fatalf("expected body %q, got %q", "hello world", recorder.Body.String())
 	}
 }

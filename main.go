@@ -12,7 +12,7 @@ func newRouter() *gin.Engine {
 	router.Use(gin.Logger(), gin.Recovery())
 
 	router.GET("/", func(c *gin.Context) {
-		c.String(http.StatusOK, "ok")
+		c.String(http.StatusOK, "hello world")
 	})
 
 	return router

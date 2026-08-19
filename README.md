@@ -1,6 +1,6 @@
 # gin-ok-service
 
-一个最小的 Gin HTTP 服务。访问根路径会返回纯文本 `ok`。
+一个最小的 Gin HTTP 服务。访问根路径会返回纯文本 `hello world`。
 
 ## 本地运行
 
