@@ -1,0 +1,178 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run unit tests
+        run: go test -race ./...
+
+      - name: Run static analysis
+        run: go vet ./...
+
+      - name: Validate deployment files
+        env:
+          IMAGE_NAME: ghcr.io/example/gin-ok-service
+          IMAGE_TAG: 0000000000000000000000000000000000000000
+          APP_BIND_ADDRESS: 127.0.0.1
+          APP_PORT: "8080"
+        run: |
+          bash -n deploy/deploy.sh
+          docker compose -f deploy/compose.production.yaml config --quiet
+
+      - name: Build Docker image
+        run: docker build --tag gin-ok-service:test .
+
+  publish:
+    name: Publish image
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_name: ${{ steps.image.outputs.name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to physical server
+    if: needs.publish.result == 'success' && vars.ENABLE_DEPLOY == 'true'
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: gin-ok-service-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
+      SERVER_USER: ${{ vars.SERVER_USER }}
+      SERVER_PORT: ${{ vars.SERVER_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/gin-ok-service' }}
+      APP_BIND_ADDRESS: ${{ vars.APP_BIND_ADDRESS || '0.0.0.0' }}
+      APP_PORT: ${{ vars.APP_PORT || '8080' }}
+      IMAGE_NAME: ${{ needs.publish.outputs.image_name }}
+      IMAGE_TAG: ${{ github.sha }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          if [[ -z "$SERVER_HOST" || -z "$DEPLOY_SSH_KEY" || -z "$SERVER_KNOWN_HOSTS" || -z "$SERVER_USER" ]]; then
+            echo "::error::SERVER_HOST, DEPLOY_SSH_KEY, SERVER_KNOWN_HOSTS and SERVER_USER must be configured"
+            exit 1
+          fi
+          [[ "$SERVER_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "::error::Invalid SERVER_HOST"; exit 1; }
+          [[ "$SERVER_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "::error::Invalid SERVER_USER"; exit 1; }
+          [[ "$SERVER_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "::error::Invalid SERVER_PORT"; exit 1; }
+          (( 10#$SERVER_PORT >= 1 && 10#$SERVER_PORT <= 65535 )) || { echo "::error::SERVER_PORT is out of range"; exit 1; }
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ && "$DEPLOY_PATH" != "/" ]] || { echo "::error::Invalid DEPLOY_PATH"; exit 1; }
+          [[ "$APP_BIND_ADDRESS" == "0.0.0.0" || "$APP_BIND_ADDRESS" == "127.0.0.1" ]] || { echo "::error::Invalid APP_BIND_ADDRESS"; exit 1; }
+          [[ "$APP_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "::error::Invalid APP_PORT"; exit 1; }
+          (( 10#$APP_PORT >= 1 && 10#$APP_PORT <= 65535 )) || { echo "::error::APP_PORT is out of range"; exit 1; }
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
+          chmod 600 "$RUNNER_TEMP/ssh/deploy_key"
+          printf '%s\n' "$SERVER_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
+          {
+            echo "Host production"
+            echo "  HostName $SERVER_HOST"
+            echo "  User $SERVER_USER"
+            echo "  Port $SERVER_PORT"
+            echo "  IdentityFile $RUNNER_TEMP/ssh/deploy_key"
+            echo "  UserKnownHostsFile $RUNNER_TEMP/ssh/known_hosts"
+            echo "  StrictHostKeyChecking yes"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  ConnectTimeout 15"
+          } > "$RUNNER_TEMP/ssh/config"
+
+      - name: Upload deployment files
+        shell: bash
+        run: |
+          ssh -F "$RUNNER_TEMP/ssh/config" production "install -d -m 0755 '$DEPLOY_PATH'"
+          scp -F "$RUNNER_TEMP/ssh/config" \
+            deploy/compose.production.yaml deploy/deploy.sh \
+            "production:$DEPLOY_PATH/"
+
+      - name: Log the server in to GHCR
+        shell: bash
+        run: |
+          printf '%s' "$GHCR_TOKEN" | \
+            ssh -F "$RUNNER_TEMP/ssh/config" production \
+              "docker login ghcr.io --username '$GHCR_USERNAME' --password-stdin"
+
+      - name: Deploy and verify
+        shell: bash
+        run: |
+          ssh -F "$RUNNER_TEMP/ssh/config" production \
+            "chmod 0755 '$DEPLOY_PATH/deploy.sh' && \
+             '$DEPLOY_PATH/deploy.sh' '$IMAGE_NAME' '$IMAGE_TAG' '$APP_BIND_ADDRESS' '$APP_PORT'"
