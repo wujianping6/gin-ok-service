@@ -13,7 +13,7 @@ host_port=$4
 image_already_loaded=${5:-false}
 deploy_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-if [[ ! $image_name =~ ^ghcr\.io/[a-z0-9._/-]+$ ]]; then
+if [[ ! $image_name =~ ^[a-z0-9]+([.-][a-z0-9]+)*(:[0-9]+)?/[a-z0-9]+([._/-][a-z0-9]+)*$ ]]; then
   echo "invalid image name: $image_name" >&2
   exit 2
 fi
@@ -66,7 +66,7 @@ compose() {
 }
 
 if [[ $image_already_loaded == "true" ]]; then
-  echo "Using the image transferred by the CI runner"
+  echo "Using the preloaded image"
   if ! docker image inspect "$image_name:$image_tag" >/dev/null; then
     echo "transferred image is not available: $image_name:$image_tag" >&2
     rm -f "$next_env"

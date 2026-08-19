@@ -34,7 +34,7 @@ jobs:
 
       - name: Validate deployment files
         env:
-          IMAGE_NAME: ghcr.io/example/gin-ok-service
+          IMAGE_NAME: registry.example.com/example/gin-ok-service
           IMAGE_TAG: 0000000000000000000000000000000000000000
           APP_BIND_ADDRESS: 127.0.0.1
           APP_PORT: "8080"
@@ -50,26 +50,50 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    env:
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      ACR_NAMESPACE: ${{ vars.ACR_NAMESPACE }}
+      ACR_REPOSITORY: ${{ vars.ACR_REPOSITORY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
     outputs:
       image_name: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set image name
+      - name: Validate ACR settings and set image name
         id: image
         shell: bash
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [[ -z "$ACR_REGISTRY" || -z "$ACR_NAMESPACE" || -z "$ACR_REPOSITORY" || -z "$ACR_USERNAME" || -z "$ACR_PASSWORD" ]]; then
+            echo "::error::ACR_REGISTRY, ACR_NAMESPACE, ACR_REPOSITORY, ACR_USERNAME and ACR_PASSWORD must be configured"
+            exit 1
+          fi
+          [[ "$ACR_REGISTRY" =~ ^[a-z0-9.-]+$ && "$ACR_REGISTRY" == *.* && "$ACR_REGISTRY" != .* && "$ACR_REGISTRY" != *. ]] || {
+            echo "::error::Invalid ACR_REGISTRY"
+            exit 1
+          }
+          [[ "$ACR_NAMESPACE" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || {
+            echo "::error::Invalid ACR_NAMESPACE"
+            exit 1
+          }
+          [[ "$ACR_REPOSITORY" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || {
+            echo "::error::Invalid ACR_REPOSITORY"
+            exit 1
+          }
+          [[ "$ACR_USERNAME" != *$'\n'* && "$ACR_PASSWORD" != *$'\n'* ]] || {
+            echo "::error::ACR credentials must not contain line breaks"
+            exit 1
+          }
+          echo "name=$ACR_REGISTRY/$ACR_NAMESPACE/$ACR_REPOSITORY" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Alibaba Cloud Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ env.ACR_PASSWORD }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -101,7 +125,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      packages: read
     env:
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -113,8 +136,9 @@ jobs:
       APP_PORT: ${{ vars.APP_PORT || '8080' }}
       IMAGE_NAME: ${{ needs.publish.outputs.image_name }}
       IMAGE_TAG: ${{ github.sha }}
-      GHCR_USERNAME: ${{ github.actor }}
-      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -122,8 +146,8 @@ jobs:
       - name: Validate deployment settings
         shell: bash
         run: |
-          if [[ -z "$SERVER_HOST" || -z "$DEPLOY_SSH_KEY" || -z "$SERVER_KNOWN_HOSTS" || -z "$SERVER_USER" ]]; then
-            echo "::error::SERVER_HOST, DEPLOY_SSH_KEY, SERVER_KNOWN_HOSTS and SERVER_USER must be configured"
+          if [[ -z "$SERVER_HOST" || -z "$DEPLOY_SSH_KEY" || -z "$SERVER_KNOWN_HOSTS" || -z "$SERVER_USER" || -z "$ACR_REGISTRY" || -z "$ACR_USERNAME" || -z "$ACR_PASSWORD" ]]; then
+            echo "::error::Server SSH and ACR settings must be configured"
             exit 1
           fi
           [[ "$SERVER_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "::error::Invalid SERVER_HOST"; exit 1; }
@@ -134,6 +158,8 @@ jobs:
           [[ "$APP_BIND_ADDRESS" == "0.0.0.0" || "$APP_BIND_ADDRESS" == "127.0.0.1" ]] || { echo "::error::Invalid APP_BIND_ADDRESS"; exit 1; }
           [[ "$APP_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "::error::Invalid APP_PORT"; exit 1; }
           (( 10#$APP_PORT >= 1 && 10#$APP_PORT <= 65535 )) || { echo "::error::APP_PORT is out of range"; exit 1; }
+          [[ "$ACR_REGISTRY" =~ ^[a-z0-9.-]+$ && "$ACR_REGISTRY" == *.* && "$ACR_REGISTRY" != .* && "$ACR_REGISTRY" != *. ]] || { echo "::error::Invalid ACR_REGISTRY"; exit 1; }
+          [[ "$ACR_USERNAME" != *$'\n'* && "$ACR_PASSWORD" != *$'\n'* ]] || { echo "::error::ACR credentials must not contain line breaks"; exit 1; }
 
       - name: Configure SSH
         shell: bash
@@ -164,26 +190,21 @@ jobs:
             deploy/compose.production.yaml deploy/deploy.sh \
             "production:$DEPLOY_PATH/"
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ env.GHCR_USERNAME }}
-          password: ${{ env.GHCR_TOKEN }}
-
-      - name: Transfer image to server
-        shell: bash
-        run: |
-          timeout --foreground 300 \
-            docker pull --platform linux/amd64 "$IMAGE_NAME:$IMAGE_TAG"
-          docker save "$IMAGE_NAME:$IMAGE_TAG" | gzip -1 | \
-            timeout --foreground 300 \
-              ssh -F "$RUNNER_TEMP/ssh/config" production \
-                'gzip -d | docker load'
-
       - name: Deploy and verify
         shell: bash
         run: |
-          ssh -F "$RUNNER_TEMP/ssh/config" production \
-            "chmod 0755 '$DEPLOY_PATH/deploy.sh' && \
-             '$DEPLOY_PATH/deploy.sh' '$IMAGE_NAME' '$IMAGE_TAG' '$APP_BIND_ADDRESS' '$APP_PORT' true"
+          {
+            printf '%s\n' "$ACR_USERNAME"
+            printf '%s\n' "$ACR_PASSWORD"
+          } | \
+            ssh -F "$RUNNER_TEMP/ssh/config" production \
+              "set -Eeuo pipefail
+               docker_config=\$(mktemp -d '$DEPLOY_PATH/.docker-config.XXXXXX')
+               trap 'rm -rf -- \"\$docker_config\"' EXIT
+               export DOCKER_CONFIG=\"\$docker_config\"
+               IFS= read -r acr_username
+               IFS= read -r acr_password
+               printf '%s\n' \"\$acr_password\" | docker login '$ACR_REGISTRY' --username \"\$acr_username\" --password-stdin
+               unset acr_password
+               chmod 0755 '$DEPLOY_PATH/deploy.sh'
+               '$DEPLOY_PATH/deploy.sh' '$IMAGE_NAME' '$IMAGE_TAG' '$APP_BIND_ADDRESS' '$APP_PORT'"

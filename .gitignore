@@ -4,3 +4,4 @@
 server
 coverage.out
 deploy/github-actions-config.env
+deploy/acr-config.env
